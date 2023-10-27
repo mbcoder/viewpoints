@@ -17,14 +17,20 @@
 package com.mycompany.app;
 
 import com.esri.arcgisruntime.ArcGISRuntimeEnvironment;
+import com.esri.arcgisruntime.geometry.Envelope;
 import com.esri.arcgisruntime.geometry.GeometryEngine;
 import com.esri.arcgisruntime.geometry.Point;
+import com.esri.arcgisruntime.geometry.PointCollection;
+import com.esri.arcgisruntime.geometry.Polygon;
+import com.esri.arcgisruntime.geometry.Polyline;
 import com.esri.arcgisruntime.geometry.SpatialReferences;
 import com.esri.arcgisruntime.mapping.BasemapStyle;
 import com.esri.arcgisruntime.mapping.ArcGISMap;
+import com.esri.arcgisruntime.mapping.Viewpoint;
 import com.esri.arcgisruntime.mapping.view.Graphic;
 import com.esri.arcgisruntime.mapping.view.GraphicsOverlay;
 import com.esri.arcgisruntime.mapping.view.MapView;
+import com.esri.arcgisruntime.symbology.SimpleLineSymbol;
 import com.esri.arcgisruntime.symbology.SimpleMarkerSymbol;
 import javafx.application.Application;
 import javafx.geometry.Point2D;
@@ -43,6 +49,8 @@ public class App extends Application {
     private Point gpsPoint;
     private Point findPoint;
     private Graphic findGraphic;
+    private GraphicsOverlay tempGraphicsOverlay;
+    private Polygon viewpointGraphic;
 
     public static void main(String[] args) {
 
@@ -80,14 +88,29 @@ public class App extends Application {
         Slider direction = new Slider(-180,180,0);
         Button drawExtent = new Button("Draw Extent");
         drawExtent.setOnAction(event -> {
-            extentGeometry(gpsPoint, findPoint, direction.getValue());
+            viewpointGraphic = extentGeometry(gpsPoint, findPoint, direction.getValue());
         });
+
         Button updateExtent = new Button("Update Extent");
+        updateExtent.setOnAction(event -> {
+
+            double compass = direction.getValue();
+            if (compass <=0) compass+=360;
+
+            Viewpoint vp = new Viewpoint(viewpointGraphic, compass);
+            mapView.setViewpoint(vp);
+
+        });
+
         hBox.getChildren().addAll(direction, drawExtent, updateExtent);
 
         // Graphics overlay for GPS and item we are trying to find
         GraphicsOverlay graphicsOverlay = new GraphicsOverlay();
         mapView.getGraphicsOverlays().add(graphicsOverlay);
+
+        // temp graphics overlay for showing working out
+        tempGraphicsOverlay = new GraphicsOverlay();
+        mapView.getGraphicsOverlays().add(tempGraphicsOverlay);
 
         // hard coded GPS position
         gpsPoint = new Point(-2.6,56, SpatialReferences.getWgs84());
@@ -111,9 +134,6 @@ public class App extends Application {
             findGraphic.setGeometry(findPoint);
         } );
 
-
-
-
         borderPane.setTop(hBox);
 
         // create an ArcGISMap with an imagery basemap
@@ -127,14 +147,76 @@ public class App extends Application {
 
     }
 
-    private void extentGeometry(Point gpsPoint, Point findPoint, double value) {
+    private Polygon extentGeometry(Point gpsPoint, Point findPoint, double rotation) {
+
+        // convert points into projected coordinate system
+        Point projectedGPSPoint = (Point) GeometryEngine.project(gpsPoint, SpatialReferences.getWebMercator());
+        Point projectedFindPoint = (Point) GeometryEngine.project(findPoint, SpatialReferences.getWebMercator());
 
         // distance in metres
         double distance = GeometryEngine.distanceBetween(
-            GeometryEngine.project(gpsPoint, SpatialReferences.getWebMercator()),
-            GeometryEngine.project(findPoint, SpatialReferences.getWebMercator()));
+            projectedGPSPoint,
+            projectedFindPoint);
         System.out.println("distance = " + distance);
 
+        // buffers for 1/2 distance between points
+        Polygon gpsBuffer = GeometryEngine.buffer(
+            projectedGPSPoint,
+            distance / 2);
+        Polygon findBuffer = GeometryEngine.buffer(
+            projectedFindPoint,
+            distance / 2);
+
+        // union the buffers
+        Polygon unionBuffer = (Polygon) GeometryEngine.union(gpsBuffer, findBuffer);
+
+        // envelope
+        Envelope envelope = unionBuffer.getExtent();
+
+        // convert envelope to polygon
+        PointCollection envPoints = new PointCollection(SpatialReferences.getWebMercator());
+        envPoints.add(new Point(envelope.getXMin(), envelope.getYMin()));
+        envPoints.add(new Point(envelope.getXMin(), envelope.getYMax()));
+        envPoints.add(new Point(envelope.getXMax(), envelope.getYMax()));
+        envPoints.add(new Point(envelope.getXMax(), envelope.getYMin()));
+        Polygon envPolygon = new Polygon(envPoints);
+
+        // mid point by making a line and then getting distance along it
+        PointCollection collection = new PointCollection(SpatialReferences.getWebMercator());
+        collection.add(projectedGPSPoint);
+        collection.add(projectedFindPoint);
+        Polyline line = new Polyline(collection);
+        Point midPoint = GeometryEngine.createPointAlong(line, distance / 2);
+
+        // rotate the envelope according to compass reading (need to convert to clockwise rotation)
+        Polygon rotatedEnvelope = (Polygon) GeometryEngine.rotate(envPolygon, 360-rotation, midPoint);
+
+        SimpleLineSymbol redLine = new SimpleLineSymbol(SimpleLineSymbol.Style.SOLID, Color.RED, 2);
+        SimpleMarkerSymbol redDot = new SimpleMarkerSymbol(SimpleMarkerSymbol.Style.CIRCLE,Color.RED, 10);
+
+
+
+
+
+        // draw construction lines
+        tempGraphicsOverlay.getGraphics().clear();
+
+        Graphic gpsGraphic = new Graphic(gpsBuffer, redLine);
+        tempGraphicsOverlay.getGraphics().add(gpsGraphic);
+
+        Graphic findGraphic = new Graphic(findBuffer, redLine);
+        tempGraphicsOverlay.getGraphics().add(findGraphic);
+
+        Graphic unionGraphic = new Graphic(unionBuffer, redLine);
+        tempGraphicsOverlay.getGraphics().add(unionGraphic);
+
+        Graphic envelopeGraphic = new Graphic(envPolygon, redLine);
+        tempGraphicsOverlay.getGraphics().add(envelopeGraphic);
+
+        Graphic rotatedGrapic = new Graphic(rotatedEnvelope, redLine);
+        tempGraphicsOverlay.getGraphics().add(rotatedGrapic);
+
+        return rotatedEnvelope;
 
     }
 
